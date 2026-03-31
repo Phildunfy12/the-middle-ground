@@ -1,0 +1,513 @@
+const express = require('express');
+const sqlite3 = require('sqlite3').verbose();
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const Joi = require('joi');
+const axios = require('axios');
+const path = require('path');
+const winston = require('winston');
+require('dotenv').config();
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+const NODE_ENV = process.env.NODE_ENV || 'development';
+
+const logger = winston.createLogger({
+    level: process.env.LOG_LEVEL || 'info',
+    format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.json()
+    ),
+    defaultMeta: { service: 'middle-ground' },
+    transports: [
+        new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
+        new winston.transports.File({ filename: 'logs/combined.log' }),
+        ...(NODE_ENV === 'development' ? [new winston.transports.Console({
+            format: winston.format.combine(
+                winston.format.colorize(),
+                winston.format.simple()
+            )
+        })] : [])
+    ]
+});
+
+app.use(helmet());
+app.use(helmet.contentSecurityPolicy({
+    directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'https:', 'http:'],
+        connectSrc: ["'self'", 'https://newsapi.org'],
+        fontSrc: ["'self'"],
+        mediaSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        frameSrc: ["'none'"]
+    }
+}));
+
+if (NODE_ENV === 'production') {
+    app.use((req, res, next) => {
+        if (req.headers['x-forwarded-proto'] !== 'https') {
+            return res.redirect(301, `https://${req.headers.host}${req.url}`);
+        }
+        next();
+    });
+}
+
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:5000').split(',');
+const corsOptions = {
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin) || NODE_ENV === 'development') {
+            callback(null, true);
+        } else {
+            logger.warn(`CORS blocked request from origin: ${origin}`);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: false,
+    optionsSuccessStatus: 200,
+    methods: ['GET', 'OPTIONS'],
+    allowedHeaders: ['Content-Type'],
+    maxAge: 3600
+};
+app.use(cors(corsOptions));
+
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ limit: '1mb', extended: false }));
+app.use(express.static('public', { maxAge: '1d', etag: false }));
+
+app.use((req, res, next) => {
+    const start = Date.now();
+    const requestId = Math.random().toString(36).substr(2, 9);
+    
+    res.on('finish', () => {
+        const duration = Date.now() - start;
+        logger.info({
+            requestId,
+            method: req.method,
+            path: req.path,
+            query: req.query,
+            status: res.statusCode,
+            duration,
+            ip: req.ip,
+            userAgent: req.get('user-agent')
+        });
+    });
+
+    res.on('close', () => {
+        if (res.writableEnded === false) {
+            logger.warn(`Request ${requestId} closed without response`);
+        }
+    });
+
+    next();
+});
+
+const createLimiter = (windowMs, max, skipFn = null) => {
+    return rateLimit({
+        windowMs,
+        max,
+        message: 'Too many requests from this IP, please try again later.',
+        standardHeaders: true,
+        legacyHeaders: false,
+        skip: skipFn || (() => false),
+        handler: (req, res) => {
+            logger.warn(`Rate limit exceeded for IP: ${req.ip}, path: ${req.path}`);
+            res.status(429).json({ 
+                error: 'Too many requests', 
+                retryAfter: req.rateLimit.resetTime 
+            });
+        }
+    });
+};
+
+const globalLimiter = createLimiter(15 * 60 * 1000, 1000, (req) => {
+    return req.path === '/api/health';
+});
+
+const articlesLimiter = createLimiter(15 * 60 * 1000, 100);
+const searchLimiter = createLimiter(60 * 1000, 30, (req) => {
+    return !req.query.search;
+});
+
+app.use(globalLimiter);
+
+const dbPath = path.join(__dirname, 'news.db');
+const db = new sqlite3.Database(dbPath, (err) => {
+    if (err) {
+        logger.error('Database connection error:', err);
+        process.exit(1);
+    }
+    logger.info('Connected to SQLite database');
+});
+
+db.run('PRAGMA foreign_keys = ON');
+
+db.serialize(() => {
+    db.run(`
+        CREATE TABLE IF NOT EXISTS articles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            source TEXT NOT NULL,
+            lean TEXT NOT NULL CHECK (lean IN ('left', 'center', 'right')),
+            image TEXT,
+            url TEXT UNIQUE NOT NULL,
+            published_at DATETIME NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            CHECK (length(title) <= 500),
+            CHECK (length(source) <= 200)
+        )
+    `, (err) => {
+        if (err) logger.error('Error creating articles table:', err);
+    });
+
+    db.run(`CREATE INDEX IF NOT EXISTS idx_published_at ON articles(published_at DESC)`, (err) => {
+        if (err) logger.error('Error creating index:', err);
+    });
+    db.run(`CREATE INDEX IF NOT EXISTS idx_lean ON articles(lean)`, (err) => {
+        if (err) logger.error('Error creating index:', err);
+    });
+    db.run(`CREATE INDEX IF NOT EXISTS idx_title_search ON articles(title)`, (err) => {
+        if (err) logger.error('Error creating index:', err);
+    });
+
+    logger.info('Database tables initialized');
+});
+
+setInterval(() => {
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    
+    db.run(
+        `DELETE FROM articles WHERE published_at < ?`,
+        [sixMonthsAgo.toISOString()],
+        function(err) {
+            if (err) {
+                logger.error('Error deleting old articles:', err);
+            } else {
+                logger.info(`Cleaned up ${this.changes} old articles`);
+            }
+        }
+    );
+}, 24 * 60 * 60 * 1000);
+
+const articlesQuerySchema = Joi.object({
+    lean: Joi.string().valid('all', 'left', 'center', 'right').default('all'),
+    search: Joi.string().trim().max(200).optional(),
+    limit: Joi.number().integer().min(1).max(100).default(50),
+    offset: Joi.number().integer().min(0).max(100000).default(0),
+    sort: Joi.string().valid('newest', 'oldest').default('newest')
+});
+
+const determineSourceLean = (source) => {
+    const leftSources = ['guardian', 'bbc', 'cnn', 'msnbc', 'npr', 'washington post', 'vox', 'cnbc'];
+    const rightSources = ['fox', 'wall street journal', 'national review', 'breitbart', 'washington examiner', 'heritage'];
+    const centerSources = ['reuters', 'associated press', 'bloomberg', 'financial times', 'economist', 'ap news'];
+    
+    const lowerSource = (source || '').toLowerCase();
+    
+    if (leftSources.some(s => lowerSource.includes(s))) return 'left';
+    if (rightSources.some(s => lowerSource.includes(s))) return 'right';
+    if (centerSources.some(s => lowerSource.includes(s))) return 'center';
+    
+    return 'center';
+};
+
+const fetchAndStoreArticles = async () => {
+    try {
+        const apiKey = process.env.NEWS_API_KEY;
+        if (!apiKey) {
+            logger.warn('NEWS_API_KEY not configured, skipping fetch');
+            return;
+        }
+
+        const response = await axios.get('https://newsapi.org/v2/top-headlines', {
+            params: {
+                country: process.env.NEWS_COUNTRY || 'us',
+                sortBy: 'publishedAt',
+                pageSize: 100,
+                apiKey: apiKey
+            },
+            timeout: 10000
+        });
+
+        let inserted = 0;
+        let duplicates = 0;
+
+        response.data.articles?.forEach(article => {
+            const lean = determineSourceLean(article.source.name);
+            
+            db.run(
+                `INSERT OR IGNORE INTO articles (title, source, lean, image, url, published_at)
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+                [
+                    article.title?.substring(0, 500),
+                    article.source.name?.substring(0, 200),
+                    lean,
+                    article.urlToImage,
+                    article.url,
+                    new Date(article.publishedAt).toISOString()
+                ],
+                function(err) {
+                    if (err) {
+                        if (err.message.includes('UNIQUE constraint failed')) {
+                            duplicates++;
+                        } else {
+                            logger.error('Error inserting article:', err);
+                        }
+                    } else if (this.changes > 0) {
+                        inserted++;
+                    }
+                }
+            );
+        });
+
+        logger.info(`News fetch complete: ${inserted} inserted, ${duplicates} duplicates`);
+        
+    } catch (error) {
+        logger.error('Error fetching articles:', {
+            message: error.message,
+            code: error.code
+        });
+    }
+};
+
+if (process.env.NEWS_API_KEY) {
+    fetchAndStoreArticles();
+    setInterval(fetchAndStoreArticles, 30 * 60 * 1000);
+} else {
+    logger.warn('NEWS_API_KEY not set - article fetching disabled');
+}
+
+app.get('/api/health', (req, res) => {
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        environment: NODE_ENV
+    });
+});
+
+app.get('/api/articles', articlesLimiter, searchLimiter, (req, res) => {
+    const { error, value } = articlesQuerySchema.validate(req.query);
+    
+    if (error) {
+        logger.warn('Invalid query parameters:', {
+            ip: req.ip,
+            error: error.details[0].message,
+            query: req.query
+        });
+        return res.status(400).json({ 
+            error: 'Invalid parameters',
+            details: error.details[0].message 
+        });
+    }
+
+    const { lean, search, limit, offset, sort } = value;
+
+    let query = 'SELECT id, title, source, lean, image, url, published_at FROM articles WHERE 1=1';
+    const params = [];
+
+    if (lean !== 'all') {
+        query += ' AND lean = ?';
+        params.push(lean);
+    }
+
+    if (search) {
+        query += ' AND (title LIKE ? OR source LIKE ?)';
+        const searchTerm = `%${search}%`;
+        params.push(searchTerm, searchTerm);
+    }
+
+    query += sort === 'oldest' ? ' ORDER BY published_at ASC' : ' ORDER BY published_at DESC';
+    query += ` LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+
+    db.all(query, params, (err, rows) => {
+        if (err) {
+            logger.error('Database query error:', {
+                error: err.message,
+                query: query.substring(0, 100)
+            });
+            return res.status(500).json({ error: 'Database error' });
+        }
+
+        res.json({
+            articles: rows || [],
+            count: rows ? rows.length : 0,
+            limit,
+            offset
+        });
+    });
+});
+
+app.get('/api/articles/count', articlesLimiter, (req, res) => {
+    const countSchema = Joi.object({
+        lean: Joi.string().valid('all', 'left', 'center', 'right').default('all'),
+        search: Joi.string().trim().max(200).optional()
+    });
+
+    const { error, value } = countSchema.validate(req.query);
+    
+    if (error) {
+        return res.status(400).json({ error: error.details[0].message });
+    }
+
+    const { lean, search } = value;
+    let query = 'SELECT COUNT(*) as count FROM articles WHERE 1=1';
+    const params = [];
+
+    if (lean !== 'all') {
+        query += ' AND lean = ?';
+        params.push(lean);
+    }
+
+    if (search) {
+        query += ' AND (title LIKE ? OR source LIKE ?)';
+        const searchTerm = `%${search}%`;
+        params.push(searchTerm, searchTerm);
+    }
+
+    db.get(query, params, (err, row) => {
+        if (err) {
+            logger.error('Database count error:', err.message);
+            return res.status(500).json({ error: 'Database error' });
+        }
+        res.json({ count: row?.count || 0 });
+    });
+});
+
+app.get('/api/stats', (req, res) => {
+    db.all(`
+        SELECT lean, COUNT(*) as count FROM articles
+        WHERE published_at > datetime('now', '-6 months')
+        GROUP BY lean
+    `, (err, rows) => {
+        if (err) {
+            logger.error('Stats query error:', err.message);
+            return res.status(500).json({ error: 'Database error' });
+        }
+
+        const stats = {
+            left: 0,
+            center: 0,
+            right: 0
+        };
+
+        rows?.forEach(row => {
+            if (stats.hasOwnProperty(row.lean)) {
+                stats[row.lean] = row.count;
+            }
+        });
+
+        const total = Object.values(stats).reduce((a, b) => a + b, 0);
+
+        res.json({
+            stats,
+            total,
+            timestamp: new Date().toISOString()
+        });
+    });
+});
+
+app.get('/api/trending', articlesLimiter, (req, res) => {
+    db.all(`
+        SELECT source, COUNT(*) as count FROM articles
+        WHERE published_at > datetime('now', '-7 days')
+        GROUP BY source
+        ORDER BY count DESC
+        LIMIT 10
+    `, (err, rows) => {
+        if (err) {
+            logger.error('Trending query error:', err.message);
+            return res.status(500).json({ error: 'Database error' });
+        }
+
+        res.json({
+            trending: rows || [],
+            period: '7 days'
+        });
+    });
+});
+
+app.use((req, res) => {
+    logger.debug('404 Not Found:', {
+        method: req.method,
+        path: req.path,
+        ip: req.ip
+    });
+    res.status(404).json({
+        error: 'Endpoint not found',
+        path: req.path
+    });
+});
+
+app.use((err, req, res, next) => {
+    logger.error('Unhandled error:', {
+        message: err.message,
+        stack: err.stack,
+        path: req.path,
+        ip: req.ip
+    });
+
+    const statusCode = err.statusCode || 500;
+    const message = NODE_ENV === 'production' ? 'Internal server error' : err.message;
+
+    res.status(statusCode).json({
+        error: message,
+        ...(NODE_ENV === 'development' && { stack: err.stack })
+    });
+});
+
+const server = app.listen(PORT, () => {
+    logger.info(`
+╔══════════════════════════════════════════════════════════╗
+║     The Middle Ground - Secure News Aggregator          ║
+╠══════════════════════════════════════════════════════════╣
+║  Server: http://localhost:${PORT}                             ║
+║  Environment: ${NODE_ENV}                                    ║
+║  Node Version: ${process.version}                           ║
+╚══════════════════════════════════════════════════════════╝
+    `);
+});
+
+const gracefulShutdown = () => {
+    logger.info('Received shutdown signal, closing gracefully...');
+    
+    server.close(() => {
+        logger.info('HTTP server closed');
+        
+        db.close((err) => {
+            if (err) {
+                logger.error('Error closing database:', err);
+                process.exit(1);
+            }
+            logger.info('Database connection closed');
+            process.exit(0);
+        });
+    });
+
+    setTimeout(() => {
+        logger.error('Forced shutdown after timeout');
+        process.exit(1);
+    }, 30000);
+};
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
+
+process.on('uncaughtException', (err) => {
+    logger.error('Uncaught exception:', err);
+    gracefulShutdown();
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    logger.error('Unhandled rejection:', {
+        reason,
+        promise
+    });
+});
+
+module.exports = app;
