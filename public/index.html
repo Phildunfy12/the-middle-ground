@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Middle Ground - Unbiased News</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #FBF8F3;
+            color: #2C2C2A;
+        }
+
+        header {
+            background: linear-gradient(135deg, #FFFFFF 0%, #FAF6F0 100%);
+            border-bottom: 0.5px solid #E8DDD0;
+            padding: 1.5rem 1rem;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+        }
+
+        .header-inner {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .logo-section {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            margin-bottom: 1.25rem;
+        }
+
+        .logo {
+            font-size: 24px;
+            font-weight: 600;
+            letter-spacing: -0.8px;
+            background: linear-gradient(135deg, #BA7517 0%, #D85A30 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .tagline {
+            font-size: 12px;
+            color: #888780;
+            font-weight: 400;
+        }
+
+        .filter-group {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .filter-btn {
+            padding: 7px 13px;
+            border: 0.5px solid #D3D1C7;
+            background: white;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            color: #5F5E5A;
+            transition: all 0.2s;
+        }
+
+        .filter-btn:hover {
+            background: #FAF6F0;
+            border-color: #BA7517;
+            color: #BA7517;
+        }
+
+        .filter-btn.active {
+            background: #BA7517;
+            color: white;
+            border-color: #BA7517;
+        }
+
+        .main-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 1.5rem 1rem;
+        }
+
+        .search-bar {
+            width: 100%;
+            padding: 12px 16px;
+            border: 0.5px solid #D3D1C7;
+            border-radius: 8px;
+            background: white;
+            color: #2C2C2A;
+            font-size: 14px;
+            margin-bottom: 2rem;
+            transition: all 0.2s;
+        }
+
+        .search-bar:focus {
+            outline: none;
+            border-color: #BA7517;
+            box-shadow: 0 0 0 3px rgba(186, 117, 23, 0.08);
+        }
+
+        .search-bar::placeholder {
+            color: #B4B2A9;
+        }
+
+        .articles-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .article-card {
+            background: white;
+            border: 0.5px solid #E8DDD0;
+            border-radius: 10px;
+            overflow: hidden;
+            transition: all 0.25s;
+            display: flex;
+            flex-direction: column;
+            cursor: pointer;
+        }
+
+        .article-card:hover {
+            border-color: #D85A30;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(216, 90, 48, 0.08);
+        }
+
+        .article-image {
+            width: 100%;
+            height: 170px;
+            background: linear-gradient(135deg, #FAF6F0 0%, #EFF3E8 100%);
+            object-fit: cover;
+            display: block;
+        }
+
+        .article-content {
+            padding: 1.25rem;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .lean-badge {
+            display: inline-block;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 4px 10px;
+            border-radius: 5px;
+            margin-bottom: 0.75rem;
+            width: fit-content;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+        }
+
+        .lean-left {
+            background: #E6F1FB;
+            color: #185FA5;
+        }
+
+        .lean-center {
+            background: #EAF3DE;
+            color: #27500A;
+        }
+
+        .lean-right {
+            background: #FAEEDA;
+            color: #633806;
+        }
+
+        .article-title {
+            font-size: 15px;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            line-height: 1.5;
+            color: #2C2C2A;
+        }
+
+        .article-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: auto;
+            padding-top: 1rem;
+            border-top: 0.5px solid #E8DDD0;
+            font-size: 12px;
+        }
+
+        .source {
+            background: #FAF6F0;
+            color: #BA7517;
+            padding: 4px 10px;
+            border-radius: 5px;
+            font-weight: 500;
+        }
+
+        .time {
+            color: #B4B2A9;
+            font-size: 11px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: #888780;
+        }
+
+        .empty-state p {
+            font-size: 14px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #888780;
+        }
+
+        @media (max-width: 768px) {
+            .articles-container {
+                grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+                gap: 1rem;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .articles-container {
+                grid-template-columns: 1fr;
+                gap: 1rem;
+            }
+
+            .article-image {
+                height: 140px;
+            }
+
+            .article-content {
+                padding: 0.875rem;
+            }
+
+            .article-title {
+                font-size: 14px;
+                line-height: 1.4;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-inner">
+            <div class="logo-section">
+                <div class="logo">The Middle Ground</div>
+                <div class="tagline">unbiased news from all angles</div>
+            </div>
+            <div class="filter-group">
+                <button class="filter-btn active" onclick="filterArticles('all')">All Stories</button>
+                <button class="filter-btn" onclick="filterArticles('left')">Left Perspective</button>
+                <button class="filter-btn" onclick="filterArticles('center')">Balanced</button>
+                <button class="filter-btn" onclick="filterArticles('right')">Right Perspective</button>
+            </div>
+        </div>
+    </header>
+
+    <div class="main-container">
+        <input type="text" class="search-bar" id="searchInput" placeholder="Search articles by topic..." onkeyup="searchArticles()">
+
+        <div class="articles-container" id="articlesContainer">
+            <div class="loading">Loading articles...</div>
+        </div>
+
+        <div id="emptyState" class="empty-state" style="display: none;">
+            <p>No articles found. Try adjusting your filters or search terms.</p>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/api';
+        let currentFilter = 'all';
+        let searchTerm = '';
+
+        function formatDate(dateString) {
+            const date = new Date(dateString);
+            const now = new Date();
+            const diffMs = now - date;
+            const diffMins = Math.floor(diffMs / 60000);
+            const diffHours = Math.floor(diffMs / 3600000);
+            const diffDays = Math.floor(diffMs / 86400000);
+
+            if (diffMins < 1) return 'Just now';
+            if (diffMins < 60) return `${diffMins}m ago`;
+            if (diffHours < 24) return `${diffHours}h ago`;
+            if (diffDays < 7) return `${diffDays}d ago`;
+            if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
+
+            return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        }
+
+        function filterArticles(filter) {
+            currentFilter = filter;
+            loadArticles();
+
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+        }
+
+        function searchArticles() {
+            searchTerm = document.getElementById('searchInput').value;
+            loadArticles();
+        }
+
+        async function loadArticles() {
+            const container = document.getElementById('articlesContainer');
+            const emptyState = document.getElementById('emptyState');
+            
+            container.innerHTML = '<div class="loading">Loading articles...</div>';
+            emptyState.style.display = 'none';
+
+            try {
+                const params = new URLSearchParams({
+                    limit: 12,
+                    offset: 0,
+                    sort: 'newest'
+                });
+
+                if (currentFilter !== 'all') {
+                    params.append('lean', currentFilter);
+                }
+
+                if (searchTerm) {
+                    params.append('search', searchTerm);
+                }
+
+                const response = await fetch(`${API_BASE}/articles?${params}`);
+                const data = await response.json();
+
+                if (!data.articles || data.articles.length === 0) {
+                    container.style.display = 'none';
+                    emptyState.style.display = 'block';
+                    return;
+                }
+
+                container.style.display = 'grid';
+                emptyState.style.display = 'none';
+
+                container.innerHTML = data.articles.map(article => `
+                    <div class="article-card" onclick="window.open('${article.url}', '_blank')">
+                        ${article.image ? `<img src="${article.image}" alt="${article.title}" class="article-image" onerror="this.style.display='none'">` : ''}
+                        <div class="article-content">
+                            <span class="lean-badge lean-${article.lean}">
+                                ${article.lean === 'left' ? 'Left Perspective' : article.lean === 'center' ? 'Balanced' : 'Right Perspective'}
+                            </span>
+                            <h3 class="article-title">${article.title}</h3>
+                            <div class="article-meta">
+                                <span class="source">${article.source}</span>
+                                <span class="time">${formatDate(article.published_at)}</span>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+
+            } catch (error) {
+                console.error('Error loading articles:', error);
+                container.innerHTML = '<div class="empty-state"><p>Error loading articles. Please try again.</p></div>';
+            }
+        }
+
+        loadArticles();
+    </script>
+</body>
+</html>
