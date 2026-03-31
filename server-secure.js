@@ -13,6 +13,8 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 
+app.set('trust proxy', 1);
+
 const logger = winston.createLogger({
     level: process.env.LOG_LEVEL || 'info',
     format: winston.format.combine(
@@ -88,18 +90,9 @@ app.use((req, res, next) => {
             requestId,
             method: req.method,
             path: req.path,
-            query: req.query,
             status: res.statusCode,
-            duration,
-            ip: req.ip,
-            userAgent: req.get('user-agent')
+            duration
         });
-    });
-
-    res.on('close', () => {
-        if (res.writableEnded === false) {
-            logger.warn(`Request ${requestId} closed without response`);
-        }
     });
 
     next();
@@ -155,9 +148,7 @@ db.serialize(() => {
             image TEXT,
             url TEXT UNIQUE NOT NULL,
             published_at DATETIME NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            CHECK (length(title) <= 500),
-            CHECK (length(source) <= 200)
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     `, (err) => {
         if (err) logger.error('Error creating articles table:', err);
@@ -295,7 +286,6 @@ app.get('/api/articles', articlesLimiter, searchLimiter, (req, res) => {
     
     if (error) {
         logger.warn('Invalid query parameters:', {
-            ip: req.ip,
             error: error.details[0].message,
             query: req.query
         });
@@ -328,8 +318,7 @@ app.get('/api/articles', articlesLimiter, searchLimiter, (req, res) => {
     db.all(query, params, (err, rows) => {
         if (err) {
             logger.error('Database query error:', {
-                error: err.message,
-                query: query.substring(0, 100)
+                error: err.message
             });
             return res.status(500).json({ error: 'Database error' });
         }
@@ -435,8 +424,7 @@ app.get('/api/trending', articlesLimiter, (req, res) => {
 app.use((req, res) => {
     logger.debug('404 Not Found:', {
         method: req.method,
-        path: req.path,
-        ip: req.ip
+        path: req.path
     });
     res.status(404).json({
         error: 'Endpoint not found',
@@ -448,8 +436,7 @@ app.use((err, req, res, next) => {
     logger.error('Unhandled error:', {
         message: err.message,
         stack: err.stack,
-        path: req.path,
-        ip: req.ip
+        path: req.path
     });
 
     const statusCode = err.statusCode || 500;
